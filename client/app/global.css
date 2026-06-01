@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+@font-face {
+    font-family: "default";
+    src: url("/calibri.ttf") format("truetype");
+}
