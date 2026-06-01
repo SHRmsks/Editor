@@ -22,6 +22,9 @@ const Main = () => {
   const CursorX = useRef<number | null>(0);
   const CursorY = useRef<number | null>(0);
   const blinkTimer = useRef<number | null>(Date.now());
+  const zoomLevel = useRef<number>(1.0);
+  const paddingX = useRef<number>(40);
+  const paddingY = useRef<number>(40);
   const FONT_PX = 20;
   const LINE_H = 1.5 * FONT_PX;
   // 1. Initial Loading
@@ -213,6 +216,7 @@ const Main = () => {
       blinkTimer.current = Date.now();
     }
   };
+
   // 3. Render Loop
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -284,8 +288,8 @@ const Main = () => {
       const dpr = window.devicePixelRatio || 1;
       const cssW = canvasRef.current!.clientWidth,
         cssH = canvasRef.current!.clientHeight;
-      const PAD_X = 40 * dpr;
-      const PAD_Y = 40 * dpr;
+      const PAD_X = paddingX.current! * dpr;
+      const PAD_Y = paddingY.current! * dpr;
       const w = Math.round(cssW * dpr);
       const h = Math.round(cssH * dpr);
       if (canvasRef.current!.width !== w) canvasRef.current!.width = w;
@@ -294,8 +298,8 @@ const Main = () => {
       clibRef.current?.update_config(
         w,
         h,
-        LINE_H * dpr,
-        FONT_PX * dpr,
+        LINE_H * dpr * zoomLevel.current,
+        FONT_PX * dpr * zoomLevel.current,
         PAD_X,
         PAD_Y,
       );
@@ -307,6 +311,35 @@ const Main = () => {
     };
     resize();
     window.addEventListener("resize", resize);
+
+    const wheelHandler = (e: WheelEvent) => {
+      if (e.ctrlKey) {
+        e.preventDefault(); // prevent zooming the page
+        const zoomMultiplier = Math.exp(-e.deltaY / 100);
+        zoomLevel.current *= zoomMultiplier;
+        //1 -5
+        zoomLevel.current = Math.min(Math.max(1.0, zoomLevel.current), 5.0);
+        resize();
+        needsUpdate.current = true;
+        needsUpdateCursor.current = true;
+        isTyping.current = true;
+        blinkTimer.current = Date.now();
+      } else {
+        scrollY.current = Math.max(
+          0,
+          scrollY.current! + e.deltaY * window.devicePixelRatio
+            ? window.devicePixelRatio
+            : 1,
+        );
+        needsUpdate.current = true;
+        needsUpdateCursor.current = true;
+        isTyping.current = true;
+        blinkTimer.current = Date.now();
+      }
+    };
+    canvasRef.current.addEventListener("wheel", wheelHandler, {
+      passive: false,
+    });
     let VBOCount = 0;
     const render = () => {
       if (clibRef.current) {
@@ -407,16 +440,6 @@ const Main = () => {
             needsUpdate.current = true;
             blinkTimer.current = Date.now();
           }
-        }}
-        onWheel={(e) => {
-          scrollY.current = Math.max(
-            0,
-            scrollY.current! + e.deltaY * window.devicePixelRatio
-              ? window.devicePixelRatio
-              : 1,
-          );
-          console.log("scrollY", scrollY.current);
-          needsUpdate.current = true;
         }}
       ></canvas>
       <input
