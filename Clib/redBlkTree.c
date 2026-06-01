@@ -3,6 +3,7 @@
 // create a new node for blk-red tree
 Node *create_Node(Piece piece, uint32_t newlineCount)
 {
+    console_log_int(node_count);
     if (node_count >= MAX_NODES)
     {
         return NULL;
@@ -16,11 +17,9 @@ Node *create_Node(Piece piece, uint32_t newlineCount)
     n->subtree_size = piece.length;
     n->newLineCount = newlineCount;
     n->subtree_newLineCount = newlineCount;
-    float est_height = (newlineCount == 0 ? 1 : newlineCount) * 20.0f; // guessed height
-    n->subtree_height_px = est_height;
-    n->node_height_px = est_height;
     return n;
 }
+// safe way to get the size of a node's subtree
 uint32_t get_size(Node *n)
 {
     return n ? n->subtree_size : 0;
@@ -32,28 +31,25 @@ void update_tree_size(Node *n)
     {
         n->subtree_size = get_size(n->left) + get_size(n->right) + n->piece.length;
         // update the newline counts
+        // safe way to get the newline count from the left and right subtrees
         uint32_t left_nl = n->left ? n->left->subtree_newLineCount : 0;
         uint32_t right_nl = n->right ? n->right->subtree_newLineCount : 0;
         n->subtree_newLineCount = left_nl + right_nl +
                                   (n->newLineCount);
-        // update the heights
-        float left_height = n->left ? n->left->subtree_height_px : 0.0f;
-        float right_height = n->right ? n->right->subtree_height_px : 0.0f;
-        n->subtree_height_px = left_height + right_height + n->node_height_px;
     }
 }
 // walk up from the node
-void update_size_upwards(Node *n, int32_t size, int32_t newlineCounts, float height_changes)
+void update_size_upwards(Node *n, int32_t size, int32_t newlineCounts)
 {
     Node *curr = n;
     while (curr)
     {
         curr->subtree_size += size;
         curr->subtree_newLineCount += newlineCounts;
-        curr->subtree_height_px += height_changes;
         curr = curr->parent;
     }
 }
+// RB tree rotation left
 void rotate_left(PieceTable *pt, Node *x)
 {
     Node *y = x->right;
@@ -164,7 +160,7 @@ void fix_insert(PieceTable *pt, Node *x)
     }
     pt->root->color = 0; // root is always blk
 }
-// helper function to get the text of a piece
+// helper function to get the text of a piece O(1)
 char *get_piece_text(PieceTable *pt, Piece piece)
 {
     char *ptr = piece.source == SOURCE_ORIGINAL ? pt->orignalBuffer : pt->addBuffer;
@@ -184,12 +180,14 @@ uint32_t get_piece_newlines(PieceTable *pt, Piece piece)
     }
     return count;
 }
-// helper function to locate the node by offset, and return the Node *
+// helper function to locate the node by offset, and return the Node * O(logN)
 Node *find_node_by_offset(Node *root, uint32_t offset, uint32_t *relative_offset, Node **lastNode)
 {
     Node *curr = root;
+    Node *parent = NULL; // track the parent
     while (curr)
     {
+        parent = curr; // update the parent before going down
         uint32_t left_size = get_size(curr->left);
         if (offset < left_size)
         {
@@ -198,17 +196,23 @@ Node *find_node_by_offset(Node *root, uint32_t offset, uint32_t *relative_offset
         else if (offset < left_size + curr->piece.length)
         {
             *relative_offset = offset - left_size;
+            if (lastNode)
+            {
+                *lastNode = parent;
+            }
             return curr;
         }
         else
         {
             offset -= left_size + curr->piece.length;
             curr = curr->right;
-            if (lastNode)
-                *lastNode = curr;
         }
     }
-    return NULL;
+    if (lastNode)
+    {
+        *lastNode = parent;
+    }
+    return NULL; // that means the offset is beyond the total size, which is the end of the document
 }
 // helper function to append a new node at given offset
 void rb_insert_after(PieceTable *pt, Node *parent, Node *newNode)
@@ -234,7 +238,7 @@ void rb_insert_after(PieceTable *pt, Node *parent, Node *newNode)
         next->left = newNode;
         newNode->parent = next;
     }
-    update_size_upwards(newNode->parent, newNode->piece.length, newNode->newLineCount, newNode->node_height_px);
+    update_size_upwards(newNode->parent, newNode->piece.length, newNode->newLineCount);
     fix_insert(pt, newNode);
 }
 // helper function prepend a new node at given offset
@@ -253,12 +257,13 @@ void rb_insert_front(PieceTable *pt, Node *newNode)
     }
     curr->left = newNode;
     newNode->parent = curr;
-    update_size_upwards(newNode->parent, newNode->piece.length, newNode->newLineCount, newNode->node_height_px);
+    update_size_upwards(newNode->parent, newNode->piece.length, newNode->newLineCount);
     fix_insert(pt, newNode);
 }
-// insert a new piece at given offset
+// insert a new piece at given offset, the global offset
 void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
 {
+    // console_log_int(offset);
     if (pt->root == NULL)
     {
         uint32_t newlinecounts = get_piece_newlines(pt, newPiece);
@@ -268,14 +273,14 @@ void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
         pt->root->next = NULL;
         return;
     }
-    uint32_t rel_offset = 0;
+    uint32_t rel_offset = 0; // the relative offset within the node
     Node *lastNode = NULL;
     Node *y = find_node_by_offset(pt->root, offset, &rel_offset, &lastNode);
-    if (y == NULL)
+    if (y == NULL) // the last leaf node
     {
         uint32_t newlinecounts = get_piece_newlines(pt, newPiece);
         Node *newNode = create_Node(newPiece, newlinecounts);
-        rb_insert_after(pt, &lastNode, newNode);
+        rb_insert_after(pt, lastNode, newNode); // rb insert after the last node
         newNode->prev = lastNode;
         if (lastNode)
             lastNode->next = newNode;
@@ -283,22 +288,22 @@ void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
     }
     else
     {
-        if (rel_offset == 0)
+        if (rel_offset == 0) // that means it's landed the exact start position of the node
         {
-            if (offset == 0)
+            if (offset == 0) // if this is the absolute start of the document
             {
                 uint32_t newlinecounts = get_piece_newlines(pt, newPiece);
                 Node *newNode = create_Node(newPiece, newlinecounts);
                 rb_insert_front(pt, newNode);
                 newNode->prev = NULL;
-                newNode->next = pt->root;
-                pt->root->prev = newNode;
+                newNode->next = y; // the new node becoems the first node
+                y->prev = newNode;
                 return;
             }
             uint32_t rel_tempoffset = 0;
             Node *temp_finalPrev = NULL;
             uint32_t newlinecounts = get_piece_newlines(pt, newPiece);
-            Node *preNode = find_node_by_offset(pt->root, offset - 1, &rel_tempoffset, temp_finalPrev);
+            Node *preNode = find_node_by_offset(pt->root, offset - 1, &rel_tempoffset, &temp_finalPrev); // since this is the relative first offset, we need to find the node before it
             Node *newNode = create_Node(newPiece, newlinecounts);
             rb_insert_after(pt, preNode, newNode);
             newNode->prev = preNode;
@@ -312,11 +317,7 @@ void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
         }
         else
         {
-            float old_h = y->node_height_px;
-            float ratio = y->piece.length > 0 ? 0.0f : (float)rel_offset / (float)(y->piece.length);
-            float new_h = old_h * ratio;
-            float right = old_h - new_h;
-            y->node_height_px = new_h;
+
             // we need to split the node y, update the newlines
             uint32_t newlinecounts_insert = get_piece_newlines(pt, newPiece);
             Piece leftPiece = y->piece;
@@ -331,12 +332,8 @@ void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
 
             uint32_t newlines_right = get_piece_newlines(pt, rightPiece);
             Node *rightNode = create_Node(rightPiece, newlines_right);
-
-            rightNode->node_height_px = right;
-            rightNode->subtree_height_px = right;
-
             Node *newNode = create_Node(newPiece, newlinecounts_insert);
-            update_size_upwards(y, -(int32_t)rightPiece.length, -(int32_t)newlines_right, -right);
+            update_size_upwards(y, -(int32_t)rightPiece.length, -(int32_t)newlines_right);
             rb_insert_after(pt, y, newNode);
             rb_insert_after(pt, newNode, rightNode);
             // update the in-order order
@@ -360,38 +357,28 @@ void insert_node(PieceTable *pt, Piece newPiece, uint32_t offset)
         }
     }
 }
-//  update the actual measured height of node
-void update_node_height(Node *n, float new_height)
+// visual logic model: find the which node contains the specified line
+Node *find_node_by_line(Node *root, uint32_t target_line, uint32_t *relative_line)
 {
-    float diff = new_height - n->node_height_px;
-    n->node_height_px = new_height;
-    update_size_upwards(n, 0, 0, diff);
-    n->subtree_height_px += diff;
-}
-// find the first that is visible in the viewport
-void find_visible_node(PieceTable *pt, float start_y, float end_y, Node **firstNode, float *relative_y)
-{
-    Node *curr = pt->root;
-    while (curr)
+    Node *current = root;
+    while (current)
     {
-        float left_height = curr->left ? curr->left->subtree_height_px : 0.0f;
-        if (start_y < left_height)
+        uint32_t left_lines = current->left ? current->left->newLineCount : 0;
+        // if in the left subtree, go search
+        if (target_line < left_lines)
         {
-            curr = curr->left;
+            current = current->left;
         }
-        else if (start_y < left_height + curr->node_height_px)
+        else if (target_line <= left_lines + current->newLineCount)
         {
-            *firstNode = curr;
-            *relative_y = start_y - left_height;
-            return;
+            *relative_line = target_line - left_lines;
+            return current;
         }
         else
         {
-            start_y -= left_height + curr->node_height_px;
-            curr = curr->right;
+            target_line -= left_lines + current->newLineCount;
+            current = current->right;
         }
     }
-    *firstNode = NULL;
-    *relative_y = 0.0f;
-    return;
+    return NULL;
 }
