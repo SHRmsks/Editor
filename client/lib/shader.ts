@@ -12,6 +12,18 @@ const vertexShaderSource=
     v_texture =texture;
     }
 `
+
+
+const SelectionVertexShaderSource=
+`#version 300 es
+layout(location = 0) in vec2 position; // Position x and y
+uniform vec2 resolution;  // global resolution
+void main() {
+    vec2 zeroToOne = position / resolution;
+    vec2 clipSpace = zeroToOne * 2.0 - 1.0;
+    gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1); // cuz y grows up
+}
+`
 const CursorVertexShaderSource = 
 `#version 300 es
 layout(location = 0) in vec2 position; // Position x and y
@@ -37,7 +49,7 @@ void main() {
     
     float opacity = smoothstep(edgeCenter - edgeWidth, edgeCenter + edgeWidth, distance);
    
-    fragColor = vec4(0.0, 0.0, 256.0, opacity);  // black
+    fragColor = vec4(0.0, 0.0, 1.0, opacity);  // black
 }
 `
 const CursorFragmentShaderSource = 
@@ -45,7 +57,16 @@ const CursorFragmentShaderSource =
 precision highp float;
 out vec4 fragColor; // Output color
 void main() {
-    fragColor = vec4(0.0, 0.0, 0.0, 1.0);  // red
+    fragColor = vec4(0.0, 0.0, 0.0, 1.0);  
+}
+`
+
+const SelectionFragmentShaderSource = 
+`#version 300 es
+precision highp float;
+out vec4 fragColor; // Output color
+void main() {
+    fragColor = vec4(255.0/255.0, 251.0/255.0, 34.0/255.0, 1.0);  
 }
 `
 function compileShader(gl, type, source) {
@@ -67,4 +88,4 @@ function createProgram(gl, vertexShader, fragmentShader) {
     gl.linkProgram(program);
     return program;
 }
-export { vertexShaderSource, fragmentShaderSource,CursorFragmentShaderSource, CursorVertexShaderSource,  compileShader, createProgram };
+export { vertexShaderSource, fragmentShaderSource,CursorFragmentShaderSource, CursorVertexShaderSource, SelectionFragmentShaderSource, SelectionVertexShaderSource,  compileShader, createProgram };

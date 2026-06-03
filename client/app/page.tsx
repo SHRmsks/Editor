@@ -7,6 +7,8 @@ import {
   createProgram,
   CursorVertexShaderSource,
   CursorFragmentShaderSource,
+  SelectionFragmentShaderSource,
+  SelectionVertexShaderSource,
 } from "@/lib/shader";
 
 const Main = () => {
@@ -27,6 +29,12 @@ const Main = () => {
   const paddingY = useRef<number>(40);
   const FONT_PX = 20;
   const LINE_H = 1.5 * FONT_PX;
+  const anchorX = useRef<number | null>(null);
+  const isDragging = useRef<boolean>(false);
+
+  const fpsRef = useRef<HTMLDivElement>(null);
+  const frameCount = useRef<number>(0);
+  const lastFpsUpdate = useRef<number>(performance.now());
   // 1. Initial Loading
   useEffect(() => {
     const WASMloader = async () => {
@@ -121,9 +129,18 @@ const Main = () => {
     isTyping.current = true;
     needsUpdateCursor.current = true;
     blinkTimer.current = Date.now();
+    anchorX.current = null;
   };
   const keydownHandler = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!clibRef.current) return;
+    if (
+      e.key === "Control" ||
+      e.key === "Meta" ||
+      e.key === "Shift" ||
+      e.key === "Alt"
+    ) {
+      return;
+    }
     if (e.key === "Backspace" && cursorOffset.current! > 0) {
       // console.log("Backspace at offset", cursorOffset.current);
       clibRef.current.delete_text(cursorOffset.current! - 1, 1);
@@ -131,23 +148,14 @@ const Main = () => {
         cursorOffset.current = Math.max(0, cursorOffset.current - 1);
       }
       needsUpdate.current = true;
-      blinkTimer.current = Date.now();
-      needsUpdateCursor.current = true;
-      isTyping.current = true;
     } else if (
       e.key === "ArrowLeft" &&
       cursorOffset.current !== null &&
       cursorOffset.current > 0
     ) {
       cursorOffset.current--;
-      isTyping.current = true;
-      needsUpdateCursor.current = true;
-      blinkTimer.current = Date.now();
     } else if (e.key === "ArrowRight" && cursorOffset.current !== null) {
       cursorOffset.current += 1;
-      isTyping.current = true;
-      needsUpdateCursor.current = true;
-      blinkTimer.current = Date.now();
     } else if (e.key == "ArrowUp") {
       e.preventDefault(); // prevent the default scrolling behavior
       // get the current cursor x and y from the render module
@@ -163,9 +171,6 @@ const Main = () => {
         targetY,
         scrollY.current,
       );
-      needsUpdateCursor.current = true;
-      isTyping.current = true;
-      blinkTimer.current = Date.now();
     } else if (e.key == "ArrowDown") {
       e.preventDefault(); // prevent the default scrolling behavior
       // get the current cursor x and y from the render module
@@ -179,9 +184,6 @@ const Main = () => {
         targetY,
         scrollY.current,
       );
-      needsUpdateCursor.current = true;
-      isTyping.current = true;
-      blinkTimer.current = Date.now();
     } else if (e.key === "Enter") {
       e.preventDefault(); // prevent the default behavior of adding a newline in the input
       const encoder = new TextEncoder();
@@ -195,9 +197,6 @@ const Main = () => {
       }
       if (hiddenInput.current) hiddenInput.current.value = "";
       needsUpdate.current = true;
-      isTyping.current = true;
-      needsUpdateCursor.current = true;
-      blinkTimer.current = Date.now();
     } else if (e.key == "Tab") {
       e.preventDefault();
       const encoder = new TextEncoder();
@@ -211,10 +210,52 @@ const Main = () => {
       }
       if (hiddenInput.current) hiddenInput.current.value = "";
       needsUpdate.current = true;
-      isTyping.current = true;
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "a") {
+      e.preventDefault();
+      anchorX.current = 0;
+      cursorOffset.current = clibRef.current.get_document_length();
+      clibRef.current.generate_selection_VBO(
+        anchorX.current,
+        cursorOffset.current,
+        scrollY.current,
+      );
+      needsUpdate.current = true;
       needsUpdateCursor.current = true;
-      blinkTimer.current = Date.now();
+
+      return;
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+      e.preventDefault();
+      if (
+        anchorX.current !== null &&
+        cursorOffset.current !== null &&
+        anchorX.current !== cursorOffset.current
+      ) {
+        const start = Math.min(anchorX.current, cursorOffset.current);
+        const end = Math.max(anchorX.current, cursorOffset.current);
+        const length = end - start;
+        const copyLen = clibRef.current.get_selection_text(start, length);
+        if (copyLen == 0) {
+          return;
+        }
+        const scratchPtr = clibRef.current.getScratchBuffer();
+        const textArray = new Uint8Array(
+          clibRef.current.memory.buffer,
+          scratchPtr,
+          copyLen,
+        );
+        const copiedText = new TextDecoder().decode(textArray);
+
+        navigator.clipboard.writeText(copiedText).catch((err) => {
+          console.error("Failed to copy text: ", err);
+        });
+        return;
+      }
     }
+
+    isTyping.current = true;
+    needsUpdateCursor.current = true;
+    blinkTimer.current = Date.now();
+    anchorX.current = null;
   };
 
   // 3. Render Loop
@@ -245,6 +286,18 @@ const Main = () => {
       ctx.FRAGMENT_SHADER, // frag shader
       CursorFragmentShaderSource,
     );
+
+    const selectionFragmentShader = compileShader(
+      ctx,
+      ctx.FRAGMENT_SHADER, // frag shader
+      SelectionFragmentShaderSource,
+    );
+    const selectionVertexShader = compileShader(
+      ctx,
+      ctx.VERTEX_SHADER, //vertex shader
+      SelectionVertexShaderSource,
+    );
+
     // PROGRAM SETUP
     const program = createProgram(ctx, vertexShader, fragmentShader);
     const cursorProgram = createProgram(
@@ -252,12 +305,17 @@ const Main = () => {
       cursorVertexShader,
       cursorFragmentShader,
     );
+    const selectionProgram = createProgram(
+      ctx,
+      selectionVertexShader,
+      selectionFragmentShader,
+    );
     const positionID = 0;
     const textureID = 1;
     // BUFFER SETUP
     const VBO = ctx.createBuffer();
     const cursorVBO = ctx.createBuffer();
-
+    const selectionVBO = ctx.createBuffer();
     const texture = ctx.createTexture();
     const image = new Image();
     image.src = "/custom.png";
@@ -282,6 +340,10 @@ const Main = () => {
     ctx.blendFunc(ctx.SRC_ALPHA, ctx.ONE_MINUS_SRC_ALPHA);
     const resolutionUniformLoc = ctx.getUniformLocation(program, "resolution");
     const cursorResLoc = ctx.getUniformLocation(cursorProgram, "resolution");
+    const selectionResLoc = ctx.getUniformLocation(
+      selectionProgram,
+      "resolution",
+    );
 
     let animationID: number;
     const resize = () => {
@@ -307,6 +369,8 @@ const Main = () => {
       ctx.uniform2f(resolutionUniformLoc, w, h);
       ctx.useProgram(cursorProgram);
       ctx.uniform2f(cursorResLoc, w, h);
+      ctx.useProgram(selectionProgram);
+      ctx.uniform2f(selectionResLoc, w, h);
       needsUpdate.current = true;
     };
     resize();
@@ -342,12 +406,49 @@ const Main = () => {
     });
     let VBOCount = 0;
     const render = () => {
+      const framestart = performance.now();
       if (clibRef.current) {
         // Clear the screen
         ctx.clearColor(1.0, 1.0, 1.0, 1.0);
         ctx.clear(ctx.COLOR_BUFFER_BIT);
+        // Phase 0: if we are selecting
+        if (
+          anchorX.current !== null &&
+          cursorOffset.current !== null &&
+          cursorOffset.current !== anchorX.current
+        ) {
+          ctx.useProgram(selectionProgram);
+          ctx.bindBuffer(ctx.ARRAY_BUFFER, selectionVBO);
+          ctx.enableVertexAttribArray(0);
+          ctx.vertexAttribPointer(0, 2, ctx.FLOAT, false, 8, 0);
+          if (needsUpdate.current || needsUpdateCursor.current) {
+            clibRef.current.generate_selection_VBO(
+              anchorX.current,
+              cursorOffset.current,
+              scrollY.current,
+            );
+            const selectionVBOPtr = clibRef.current.get_SELECTION_VBO();
+            const selCount = clibRef.current.get_selection_vbo_count();
+            if (selCount > 0) {
+              const selectionVBOArray = new Float32Array(
+                clibRef.current.memory.buffer,
+                selectionVBOPtr,
+                selCount,
+              );
+              ctx.bufferData(
+                ctx.ARRAY_BUFFER,
+                selectionVBOArray,
+                ctx.STATIC_DRAW,
+              );
+            }
+          }
+          const activeSelCount = clibRef.current.get_selection_vbo_count();
+          if (activeSelCount > 0) {
+            ctx.drawArrays(ctx.TRIANGLES, 0, activeSelCount / 2);
+          }
+        }
         //  generate the frame
-        // Phae 1:
+        // Phase 1:
         // the TEXT and bind to the context buffer
         ctx.useProgram(program);
         ctx.bindBuffer(ctx.ARRAY_BUFFER, VBO);
@@ -412,6 +513,22 @@ const Main = () => {
           ctx.drawArrays(ctx.TRIANGLES, 0, 6); // two triangles for the cursor
         }
       }
+      const frameEnd = performance.now();
+      const paintTime = frameEnd - framestart;
+      frameCount.current++;
+      if (frameEnd - lastFpsUpdate.current >= 500) {
+        const fps = Math.round(
+          (frameCount.current * 1000) / (frameEnd - lastFpsUpdate.current),
+        );
+
+        if (fpsRef.current) {
+          // Directly mutate the DOM to avoid React re-renders
+          fpsRef.current.innerText = `FPS: ${fps} | Paint: ${paintTime.toFixed(2)}ms`;
+        }
+
+        frameCount.current = 0;
+        lastFpsUpdate.current = frameEnd;
+      }
       animationID = requestAnimationFrame(render);
     };
 
@@ -424,21 +541,62 @@ const Main = () => {
       className="w-screen h-screen bg-gray-100 relative overflow-hidden"
       onClick={() => hiddenInput.current?.focus()}
     >
+      <div
+        ref={fpsRef}
+        className="absolute top-2 right-2 bg-black/80 text-green-400 font-mono text-xs px-2 py-1 z-50 rounded pointer-events-none"
+      >
+        FPS: 0 | Paint: 0.00ms
+      </div>
       <canvas
         className="bg-white w-full h-full absolute top-0 left-0"
         ref={canvasRef}
         width={1000} // Set explicit canvas coordinate sizes
         height={1000}
-        onClick={(e) => {
+        onPointerDown={(e: React.PointerEvent<HTMLCanvasElement>) => {
           if (canvasRef.current) {
+            e.currentTarget.setPointerCapture(e.pointerId);
             const rec = canvasRef.current.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
             CursorX.current = (e.clientX - rec.left) * dpr;
             CursorY.current = (e.clientY - rec.top) * dpr + scrollY.current!;
+            const idx = clibRef.current.update_cursor_VBO(
+              CursorX.current,
+              CursorY.current,
+              scrollY.current,
+            );
+            cursorOffset.current = idx;
+            anchorX.current = idx;
+            // update the states
+            isDragging.current = true;
             needsUpdateCursor.current = true;
             isTyping.current = false;
             needsUpdate.current = true;
             blinkTimer.current = Date.now();
+          }
+        }}
+        onPointerMove={(e: React.PointerEvent<HTMLCanvasElement>) => {
+          if (isDragging.current && canvasRef.current) {
+            const rec = canvasRef.current.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            CursorX.current = (e.clientX - rec.left) * dpr;
+            CursorY.current = (e.clientY - rec.top) * dpr + scrollY.current!;
+
+            cursorOffset.current = clibRef.current.update_cursor_VBO(
+              CursorX.current,
+              CursorY.current,
+              scrollY.current,
+            );
+            // update the states
+            needsUpdateCursor.current = true;
+            isTyping.current = false;
+            needsUpdate.current = true;
+            blinkTimer.current = Date.now();
+          }
+        }}
+        onPointerUp={(e) => {
+          isDragging.current = false;
+          if (canvasRef.current) {
+            e.currentTarget.releasePointerCapture(e.pointerId);
           }
         }}
       ></canvas>

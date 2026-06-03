@@ -4,10 +4,51 @@ extern Glyph fonts[256];
 Config config = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 Cursor cached_cursor = {0xFFFFFFFF, 0.0f, 0.0f};
 int VBO_IDX = 0;
+int SELECTION_VBO_IDX = 0;
+extern char ScratchBuffer[4096];
 // check if a character is white space
 int is_whiteSpace(char c)
 {
     return (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+}
+// get the document whole length
+uint32_t get_document_length()
+{
+    Node *root = pieceTable.root;
+    if (root == NULL)
+    {
+        return 0;
+    }
+    return root->subtree_size;
+}
+// get the selection text and copy into the scratch buffer;
+uint32_t get_selection_text(uint32_t start_idx, uint32_t len)
+{
+    if (len == 0)
+    {
+        return 0;
+    }
+    if (len > 4096)
+    {
+        len = 4096; // cap the max length to avoid overflow
+    }
+    uint32_t rel_offset = 0;
+    Node *node = find_node_by_offset(pieceTable.root, start_idx, &rel_offset, NULL);
+    if (!node)
+        return 0;
+    uint32_t copied = 0;
+    while (node && copied < len)
+    {
+        char *text = get_piece_text(&pieceTable, node->piece);
+        uint32_t available = node->piece.length - rel_offset;
+        uint32_t to_copy = available < (len - copied) ? available : (len - copied);
+        c_memcpy(ScratchBuffer + copied, text + rel_offset, to_copy);
+        copied += to_copy;
+        node = node->next;
+        rel_offset = 0;
+    }
+
+    return copied;
 }
 // helper function for JS to update the config based on the real browser info
 void update_config(float vp_x, float vp_y, float line_h, float font_sz, float padding_x, float padding_y)
@@ -243,6 +284,88 @@ uint32_t update_cursor_VBO(float cursor_x, float cursor_y)
     CURSOR_VBO[11] = y + cursor_height;
     return idx;
 }
+void generate_selection_VBO(uint32_t start_idx, uint32_t end_idx, float scrolly)
+{
+    SELECTION_VBO_IDX = 0;
+    if (start_idx == end_idx)
+    {
+        return;
+    }
+    if (start_idx > end_idx)
+    {
+        uint32_t temp = start_idx;
+        start_idx = end_idx;
+        end_idx = temp;
+    }
+    float curr_x = config.padding_x;                           // start with padding
+    float curr_y = config.padding_y + config.line_h - scrolly; // the
+    uint32_t idx = 0;
+    Node *node = tree_first(pieceTable.root);
+    while (node && idx < end_idx)
+    {
+        char *text = get_piece_text(&pieceTable, node->piece);
+        uint32_t len = node->piece.length;
+        for (uint32_t i = 0; i < len && idx < end_idx; i++)
+        {
+            char c = text[i];
+            float ceiling = curr_y - config.font_size;               // the ceiling of the current line
+            float floor = curr_y + config.line_h - config.font_size; // the floor of the current line
+            if (c == '\n')
+            {
+                curr_x = config.padding_x; // reset to the padding x
+                curr_y += config.line_h;
+                idx++;
+                continue;
+            }
+            Glyph glyph = fonts[(unsigned char)c];
+            if (c == '\t')
+            {
+                glyph = fonts[32];     // Steal the space glyph metrics
+                glyph.advance *= 4.0f; // Make it 4 spaces wide
+            }
+            if (curr_x + glyph.advance * config.font_size > config.viewPort_x - config.padding_x)
+            {
+                curr_x = config.padding_x;
+                curr_y += config.line_h;
+                ceiling = curr_y - config.font_size;
+                floor = curr_y + config.line_h - config.font_size;
+            }
+            if (idx >= start_idx && idx < end_idx)
+            {
+                // this character is in the selection range, add a rectangle for it
+                float x0 = curr_x;
+                float x1 = curr_x + glyph.advance * config.font_size;
+                float y0 = ceiling;
+                float y1 = floor;
+
+                // Triangle 1
+                // top left
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x0;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y0;
+                // bottom left
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x0;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y1;
+                // top right
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x1;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y0;
+
+                // Triangle 2
+                // top right
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x1;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y0;
+                // bottom left
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x0;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y1;
+                // bottom right
+                SELECTION_VBO[SELECTION_VBO_IDX++] = x1;
+                SELECTION_VBO[SELECTION_VBO_IDX++] = y1;
+            }
+            curr_x += glyph.advance * config.font_size;
+            idx++;
+        }
+        node = node->next;
+    }
+}
 void update_cursor_index_VBO(uint32_t target_idx)
 {
     float x = config.padding_x, y = config.padding_y + config.line_h;
@@ -359,9 +482,17 @@ float *get_CURSOR_VBO()
 {
     return CURSOR_VBO;
 }
+float *get_SELECTION_VBO()
+{
+    return SELECTION_VBO;
+}
 int get_vbo_count()
 {
     return VBO_IDX;
+}
+int get_selection_vbo_count()
+{
+    return SELECTION_VBO_IDX;
 }
 float get_current_cursor_x()
 {
